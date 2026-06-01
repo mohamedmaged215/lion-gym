@@ -125,7 +125,7 @@ export default function DashboardPage() {
     const subscriptionRevenue = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
 
     const activeMembers = customers.filter(
-      (c) => c.startDate <= monthEnd && c.endDate >= monthStart
+      (c) => (c.subscriptionType ?? "monthly") !== "session" && c.status === "active"
     ).length;
 
     const expiringSoon = customers.filter(

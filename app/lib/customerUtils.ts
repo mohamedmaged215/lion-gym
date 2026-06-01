@@ -12,6 +12,6 @@ export function calculateStatus(endDate: string): "active" | "expiring" | "expir
   const diffDays = Math.floor((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
   if (diffDays < 0) return "expired";
-  if (diffDays <= 3) return "expiring";
+  if (diffDays >= 0 && diffDays <= 3) return "expiring";
   return "active";
 }
