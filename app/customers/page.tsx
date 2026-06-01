@@ -205,9 +205,10 @@ function CustomersContent() {
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
 
   const afterUrlFilter = customers.filter((c) => {
-    if (urlFilter === "active")   return c.status === "active" || c.status === "expiring";
-    if (urlFilter === "expiring") return c.status === "expiring";
-    if (urlFilter === "expired")  return c.status === "expired";
+    const isSession = (c.subscriptionType ?? "monthly") === "session";
+    if (urlFilter === "active")   return !isSession && calculateStatus(c.endDate) === "active";
+    if (urlFilter === "expiring") return !isSession && calculateStatus(c.endDate) === "expiring";
+    if (urlFilter === "expired")  return !isSession && calculateStatus(c.endDate) === "expired";
     if (urlFilter === "new")      return c.startDate >= monthStart;
     return true;
   });
