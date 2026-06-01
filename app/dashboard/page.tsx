@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import { getCustomers, getPayments, getExpenses } from "../lib/firebaseUtils";
 import { Customer, Payment, Expense } from "../lib/types";
+import { calculateStatus } from "../lib/customerUtils";
 import Navbar from "../components/Navbar";
 
 const ARABIC_MONTHS = [
@@ -124,16 +125,18 @@ export default function DashboardPage() {
 
     const subscriptionRevenue = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
 
+    const isMonthly = (c: Customer) => (c.subscriptionType ?? "monthly") !== "session";
+
     const activeMembers = customers.filter(
-      (c) => (c.subscriptionType ?? "monthly") !== "session" && c.status === "active"
+      (c) => isMonthly(c) && calculateStatus(c.endDate) === "active"
     ).length;
 
     const expiringSoon = customers.filter(
-      (c) => (c.subscriptionType ?? "monthly") !== "session" && c.status === "expiring"
+      (c) => isMonthly(c) && calculateStatus(c.endDate) === "expiring"
     ).length;
 
     const expiredThisMonth = customers.filter(
-      (c) => (c.subscriptionType ?? "monthly") !== "session" && c.status === "expired"
+      (c) => isMonthly(c) && calculateStatus(c.endDate) === "expired"
     ).length;
 
     const totalExpenses = expenses
