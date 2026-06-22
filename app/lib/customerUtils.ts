@@ -4,7 +4,12 @@ export function calculateEndDate(startDate: string, durationDays: number): strin
   return start.toISOString().split("T")[0];
 }
 
-export function calculateStatus(endDate: string): "active" | "expiring" | "expired" {
+export function calculateStatus(
+  endDate: string,
+  subscriptionType?: "monthly" | "session"
+): "active" | "expiring" | "expired" | "session" {
+  if (subscriptionType === "session") return "session";
+
   const now = new Date();
   now.setHours(0, 0, 0, 0);
   const end = new Date(endDate);
