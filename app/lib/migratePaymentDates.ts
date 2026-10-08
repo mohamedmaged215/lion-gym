@@ -1,5 +1,5 @@
 import { collection, getDocs, query, where, updateDoc } from "firebase/firestore";
-import { db } from "./firebase";
+import { db } from "./firebaseDb";
 
 /**
  * One-time migration: for each customer, find their payments and set each

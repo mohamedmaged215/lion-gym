@@ -1,7 +1,7 @@
+import { addDays } from "./dates";
+
 export function calculateEndDate(startDate: string, durationDays: number): string {
-  const start = new Date(startDate);
-  start.setDate(start.getDate() + durationDays);
-  return start.toISOString().split("T")[0];
+  return addDays(startDate, durationDays);
 }
 
 export function calculateStatus(
@@ -10,11 +10,14 @@ export function calculateStatus(
 ): "active" | "expiring" | "expired" | "session" {
   if (subscriptionType === "session") return "session";
 
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const end = new Date(endDate);
-  end.setHours(0, 0, 0, 0);
-  const diffDays = Math.floor((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  const [year, month, day] = endDate.split("-").map(Number);
+  const end = new Date(year, month - 1, day);
+  const today = new Date();
+  const diffDays = Math.round(
+    (Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()) -
+      Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())) /
+      86_400_000
+  );
 
   if (diffDays < 0) return "expired";
   if (diffDays >= 0 && diffDays <= 3) return "expiring";

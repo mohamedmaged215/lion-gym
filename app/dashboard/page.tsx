@@ -1,19 +1,13 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut } from "firebase/auth";
-import { auth } from "../lib/firebase";
-import { getCustomers, getPayments, getExpenses } from "../lib/firebaseUtils";
-import { Customer, Payment, Expense } from "../lib/types";
-import { calculateStatus } from "../lib/customerUtils";
+import { auth } from "../lib/firebaseAuth";
+import { getDashboardStats } from "../lib/firebaseUtils";
+import { localDate } from "../lib/dates";
 import Navbar from "../components/Navbar";
-
-const ARABIC_MONTHS = [
-  "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
-  "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر",
-];
 
 function StatCard({
   label,
@@ -52,110 +46,33 @@ function StatCard({
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [stats, setStats] = useState<Awaited<ReturnType<typeof getDashboardStats>> | null>(null);
   const [loading, setLoading] = useState(true);
-
-  const now = new Date();
-  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
-  const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
+  const [error, setError] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState(() => localDate().slice(0, 7));
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
-      const [c, p, e] = await Promise.all([
-        getCustomers(),
-        getPayments(),
-        getExpenses(),
-      ]);
-      setCustomers(c);
-      setPayments(p);
-      setExpenses(e);
-      setLoading(false);
+      setLoading(true);
+      setError("");
+      try {
+        const result = await getDashboardStats(selectedMonth);
+        if (!cancelled) setStats(result);
+      } catch {
+        if (!cancelled) setError("تعذر تحميل الإحصائيات. حاول مرة أخرى.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
     load();
-  }, []);
+    return () => { cancelled = true; };
+  }, [selectedMonth]);
 
   async function handleLogout() {
     await signOut(auth);
     router.push("/");
   }
-
-  const monthOptions = useMemo(() => {
-    const seen = new Set<string>();
-    seen.add(`${now.getFullYear()}-${now.getMonth()}`);
-
-    for (const c of customers) {
-      const d = new Date(c.startDate);
-      seen.add(`${d.getFullYear()}-${d.getMonth()}`);
-    }
-    for (const p of payments) {
-      const d = new Date(p.date);
-      seen.add(`${d.getFullYear()}-${d.getMonth()}`);
-    }
-    for (const e of expenses) {
-      const d = new Date(e.date);
-      seen.add(`${d.getFullYear()}-${d.getMonth()}`);
-    }
-
-    return Array.from(seen)
-      .map((key) => {
-        const [y, m] = key.split("-").map(Number);
-        return { year: y, month: m };
-      })
-      .sort((a, b) => b.year !== a.year ? b.year - a.year : b.month - a.month);
-  }, [customers, payments, expenses]);
-
-  const stats = useMemo(() => {
-    const monthPrefix = `${selectedYear}-${String(selectedMonth + 1).padStart(2, "0")}`;
-    const monthStart = `${monthPrefix}-01`;
-    const lastDay = new Date(selectedYear, selectedMonth + 1, 0).getDate();
-    const monthEnd = `${monthPrefix}-${String(lastDay).padStart(2, "0")}`;
-
-    function normalizeDate(raw: unknown): string {
-      if (!raw) return "";
-      if (typeof raw === "object" && raw !== null && "seconds" in raw) {
-        const ts = raw as { seconds: number };
-        return new Date(ts.seconds * 1000).toISOString().slice(0, 10);
-      }
-      if (typeof raw === "object" && raw !== null && "toDate" in raw) {
-        return (raw as { toDate(): Date }).toDate().toISOString().slice(0, 10);
-      }
-      if (typeof raw === "string") return raw.slice(0, 10);
-      return String(raw).slice(0, 10);
-    }
-
-    const filteredPayments = payments.filter((p) => {
-      const d = normalizeDate(p.date);
-      return d.startsWith(monthPrefix);
-    });
-
-    const subscriptionRevenue = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
-
-    const isMonthly = (c: Customer) => (c.subscriptionType ?? "monthly") !== "session";
-
-    const activeMembers = customers.filter(
-      (c) => isMonthly(c) && calculateStatus(c.endDate, c.subscriptionType) === "active"
-    ).length;
-
-    const expiringSoon = customers.filter(
-      (c) => isMonthly(c) && calculateStatus(c.endDate, c.subscriptionType) === "expiring"
-    ).length;
-
-    const expiredThisMonth = customers.filter(
-      (c) => isMonthly(c) && calculateStatus(c.endDate, c.subscriptionType) === "expired"
-    ).length;
-
-    const totalExpenses = expenses
-      .filter((e) => { const d = normalizeDate(e.date); return d >= monthStart && d <= monthEnd; })
-      .reduce((sum, e) => sum + e.price, 0);
-
-    const netProfit = subscriptionRevenue - totalExpenses;
-
-    return { activeMembers, expiringSoon, subscriptionRevenue, expiredThisMonth, totalExpenses, netProfit };
-  }, [customers, payments, expenses, selectedYear, selectedMonth]);
-
-  const isCurrentMonth = selectedYear === now.getFullYear() && selectedMonth === now.getMonth();
 
   return (
     <div className="min-h-full bg-gray-50/50 pb-24 sm:pb-8">
@@ -166,21 +83,13 @@ export default function DashboardPage() {
           <h2 className="text-xl sm:text-2xl font-black text-gray-900">نظرة عامة</h2>
           
           <div className="flex items-center gap-2">
-            <select
-              value={`${selectedYear}-${selectedMonth}`}
-              onChange={(e) => {
-                const [y, m] = e.target.value.split("-").map(Number);
-                setSelectedYear(y);
-                setSelectedMonth(m);
-              }}
+            <input
+              type="month"
+              aria-label="شهر الإيرادات والمصاريف"
+              value={selectedMonth}
+              onChange={(e) => e.target.value && setSelectedMonth(e.target.value)}
               className="px-3.5 py-2 rounded-xl border border-gray-200 bg-white text-gray-900 text-sm font-semibold shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition cursor-pointer"
-            >
-              {monthOptions.map(({ year, month }) => (
-                <option key={`${year}-${month}`} value={`${year}-${month}`}>
-                  {ARABIC_MONTHS[month]} {year}
-                </option>
-              ))}
-            </select>
+            />
 
             {/* Mobile Logout Button */}
             <button
@@ -195,19 +104,23 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        <p className="text-xs text-gray-500 mb-4">أرقام الأعضاء حسب حالتهم اليوم، والإيرادات والمصاريف حسب الشهر المختار.</p>
+
         {loading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[...Array(6)].map((_, i) => (
               <div key={i} className="bg-gray-100 rounded-2xl h-24 animate-pulse border border-gray-150" />
             ))}
           </div>
+        ) : error || !stats ? (
+          <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error || "تعذر تحميل الإحصائيات."}</p>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <StatCard
-              label="الأعضاء النشطون"
+              label="الأعضاء النشطون حالياً"
               value={stats.activeMembers}
               color="green"
-              href={isCurrentMonth ? "/customers?filter=active" : undefined}
+              href="/customers?filter=active"
               icon={
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -215,10 +128,10 @@ export default function DashboardPage() {
               }
             />
             <StatCard
-              label="اشتراكات تنتهي هذا الشهر"
+              label="تنتهي خلال 3 أيام"
               value={stats.expiringSoon}
               color="orange"
-              href={isCurrentMonth ? "/customers?filter=expiring" : undefined}
+              href="/customers?filter=expiring"
               icon={
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -236,8 +149,8 @@ export default function DashboardPage() {
               }
             />
             <StatCard
-              label="اشتراكات منتهية"
-              value={stats.expiredThisMonth}
+              label="اشتراكات منتهية حالياً"
+              value={stats.expiredMembers}
               color="red"
               href="/customers?filter=expired"
               icon={

@@ -3,8 +3,9 @@
 import { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { getCustomers, deleteCustomer, renewCustomer } from "../lib/firebaseUtils";
+import { getCustomers, getCustomersForMonth, getCustomersForFilter, getCustomerPage, deleteCustomer, renewCustomer, type PageCursor } from "../lib/firebaseUtils";
 import { calculateEndDate, calculateStatus } from "../lib/customerUtils";
+import { localDate, monthBounds } from "../lib/dates";
 import { Customer } from "../lib/types";
 import Navbar from "../components/Navbar";
 
@@ -14,6 +15,10 @@ const STATUS_STYLES: Record<string, string> = {
   expired:  "bg-red-150 text-red-700 border-red-200",
   session:  "bg-blue-150 text-blue-700 border-blue-200",
 };
+
+function newestFirst(a: Customer, b: Customer): number {
+  return b.startDate.localeCompare(a.startDate) || b.id.localeCompare(a.id);
+}
 
 function statusLabel(c: Customer): string {
   if ((c.subscriptionType ?? "monthly") === "session" || c.status === "session") return "حصة";
@@ -29,7 +34,22 @@ function statusLabel(c: Customer): string {
   return "نشط";
 }
 
-function DeleteModal({ name, onConfirm, onCancel }: { name: string; onConfirm: () => void; onCancel: () => void }) {
+function DeleteModal({ name, onConfirm, onCancel }: { name: string; onConfirm: () => Promise<void>; onCancel: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleConfirm() {
+    setSaving(true);
+    setError("");
+    try {
+      await onConfirm();
+    } catch {
+      setError("تعذر حذف الاشتراك. حاول مرة أخرى.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
@@ -40,9 +60,10 @@ function DeleteModal({ name, onConfirm, onCancel }: { name: string; onConfirm: (
           <br />
           <span className="text-red-500 font-medium">لا يمكن التراجع عن هذا الإجراء.</span>
         </p>
+        {error && <p role="alert" className="mb-3 text-sm text-red-600">{error}</p>}
         <div className="flex gap-3">
-          <button onClick={onConfirm} className="flex-1 py-3 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 active:scale-95 transition">حذف</button>
-          <button onClick={onCancel} className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 active:scale-95 transition">إلغاء</button>
+          <button onClick={handleConfirm} disabled={saving} className="flex-1 py-3 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 active:scale-95 disabled:opacity-60 transition">{saving ? "جارٍ الحذف…" : "حذف"}</button>
+          <button onClick={onCancel} disabled={saving} className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 active:scale-95 disabled:opacity-60 transition">إلغاء</button>
         </div>
       </div>
     </div>
@@ -58,13 +79,14 @@ function RenewModal({
   onConfirm: (startDate: string, durationDays: number, price: number) => Promise<void>;
   onCancel: () => void;
 }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDate();
   const [form, setForm] = useState({
     startDate: today,
     durationDays: "30",
     price: String(customer.price),
   });
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   function set(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -79,8 +101,14 @@ function RenewModal({
     e.preventDefault();
     if (!newEndDate) return;
     setSaving(true);
-    await onConfirm(form.startDate, Number(form.durationDays), Number(form.price));
-    setSaving(false);
+    setError("");
+    try {
+      await onConfirm(form.startDate, Number(form.durationDays), Number(form.price));
+    } catch {
+      setError("تعذر تجديد الاشتراك. حاول مرة أخرى.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -135,6 +163,7 @@ function RenewModal({
             />
           </div>
 
+          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
           <div className="flex gap-3 pt-2">
             <button
               type="submit"
@@ -163,20 +192,67 @@ function CustomersContent() {
 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState("");
+  const [month, setMonth] = useState("");
+  const [visibleCount, setVisibleCount] = useState(25);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [cursor, setCursor] = useState<PageCursor | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [renewTarget, setRenewTarget] = useState<Customer | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    const data = await getCustomers();
-    data.sort((a, b) => a.name.localeCompare(b.name));
-    setCustomers(data);
-    setLoading(false);
-  }
+  const completeList = Boolean(search.trim()) || Boolean(urlFilter);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setLoadError("");
+      try {
+        if (completeList) {
+          const data = month
+            ? await getCustomersForMonth(month)
+            : urlFilter
+              ? await getCustomersForFilter(urlFilter)
+              : await getCustomers();
+          if (cancelled) return;
+          setCustomers(data.sort(newestFirst));
+          setCursor(null);
+          setHasMore(false);
+        } else {
+          const page = await getCustomerPage(month, null);
+          if (cancelled) return;
+          setCustomers(page.customers);
+          setCursor(page.cursor);
+          setHasMore(page.hasMore);
+        }
+      } catch {
+        if (!cancelled) setLoadError("تعذر تحميل الاشتراكات. حاول مرة أخرى.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [month, completeList, urlFilter]);
+
+  async function loadMore() {
+    if (!cursor || !hasMore || loadingMore) return;
+    setLoadingMore(true);
+    setLoadError("");
+    try {
+      const page = await getCustomerPage(month, cursor);
+      setCustomers((previous) => [...previous, ...page.customers].sort(newestFirst));
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
+    } catch {
+      setLoadError("تعذر تحميل المزيد. حاول مرة أخرى.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function confirmDelete() {
     if (!deleteTarget) return;
@@ -195,18 +271,24 @@ function CustomersContent() {
       { customerId: renewTarget.id, amount: price, date: startDate }
     );
     const name = renewTarget.name;
+    const renewedId = renewTarget.id;
+    const selectedMonthBounds = month ? monthBounds(month) : null;
     setRenewTarget(null);
-    await load();
+    setCustomers((previous) => previous
+      .map((customer) => customer.id === renewedId
+        ? { ...customer, startDate, endDate, durationDays, price, status }
+        : customer)
+      .filter((customer) => !selectedMonthBounds || (customer.startDate >= selectedMonthBounds.start && customer.startDate < selectedMonthBounds.end))
+      .sort(newestFirst));
     setSuccessMsg(`تم تجديد اشتراك ${name} بنجاح ✅`);
     setTimeout(() => setSuccessMsg(null), 4000);
   }
 
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+  const monthStart = `${localDate().slice(0, 7)}-01`;
 
   const afterUrlFilter = customers.filter((c) => {
     const liveStatus = calculateStatus(c.endDate, c.subscriptionType);
-    if (urlFilter === "active")   return liveStatus === "active" || liveStatus === "expiring" || liveStatus === "session";
+    if (urlFilter === "active")   return liveStatus === "active";
     if (urlFilter === "expiring") return liveStatus === "expiring";
     if (urlFilter === "expired")  return liveStatus === "expired";
     if (urlFilter === "new")      return c.startDate >= monthStart;
@@ -217,7 +299,8 @@ function CustomersContent() {
     (c) =>
       c.name.toLowerCase().includes(search.toLowerCase()) ||
       c.phone.includes(search)
-  );
+  ).sort(newestFirst);
+  const displayed = completeList ? filtered.slice(0, visibleCount) : filtered;
 
   function waMessage(c: Customer): string {
     const isSession = (c.subscriptionType ?? "monthly") === "session";
@@ -288,15 +371,29 @@ function CustomersContent() {
           </div>
         </div>
 
-        <div className="mb-6">
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-end gap-3">
           <input
             type="text"
+            aria-label="بحث بالاسم أو الهاتف"
             placeholder="بحث بالاسم أو الهاتف…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setVisibleCount(25); }}
             className="w-full sm:w-72 px-4 py-3 rounded-xl border border-gray-300 bg-white text-gray-900 placeholder-gray-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
           />
+          <label className="flex flex-col gap-1 text-xs font-bold text-gray-600">
+            شهر الاشتراك
+            <input
+              type="month"
+              value={month}
+              onChange={(e) => { setMonth(e.target.value); setVisibleCount(25); }}
+              className="w-full sm:w-48 px-4 py-3 rounded-xl border border-gray-300 bg-white text-gray-900 text-sm font-semibold shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </label>
+          {month && <button type="button" onClick={() => { setMonth(""); setVisibleCount(25); }} className="px-4 py-3 rounded-xl border border-gray-200 bg-white text-sm font-bold text-gray-600">كل الشهور</button>}
+          <span className="text-xs text-gray-500 sm:pb-3">الأحدث أولاً</span>
         </div>
+
+        {loadError && <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</p>}
 
         {loading ? (
           <div className="space-y-3">
@@ -304,13 +401,13 @@ function CustomersContent() {
               <div key={i} className="h-20 bg-gray-100 rounded-2xl animate-pulse border border-gray-150" />
             ))}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : loadError && customers.length === 0 ? null : filtered.length === 0 ? (
           <p className="text-center text-gray-400 text-sm py-16 bg-white rounded-2xl border border-gray-200">لا توجد اشتراكات.</p>
         ) : (
           <>
             {/* Mobile View: Cards Layout (sm:hidden) */}
             <div className="sm:hidden space-y-4">
-              {filtered.map((c) => {
+              {displayed.map((c) => {
                 const waLink = `https://wa.me/2${c.phone}?text=${encodeURIComponent(waMessage(c))}`;
                 const liveStatus = calculateStatus(c.endDate, c.subscriptionType);
                 const isSession = c.subscriptionType === "session" || c.status === "session";
@@ -416,7 +513,7 @@ function CustomersContent() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {filtered.map((c) => {
+                    {displayed.map((c) => {
                       const waLink = `https://wa.me/2${c.phone}?text=${encodeURIComponent(waMessage(c))}`;
                       const liveStatus = calculateStatus(c.endDate, c.subscriptionType);
                       const isSession = c.subscriptionType === "session" || c.status === "session";
@@ -484,6 +581,13 @@ function CustomersContent() {
               </div>
             </div>
           </>
+        )}
+        {!loading && ((hasMore && !completeList) || (completeList && filtered.length > visibleCount)) && (
+          <div className="mt-5 text-center">
+            <button type="button" onClick={completeList ? () => setVisibleCount((count) => count + 25) : loadMore} disabled={loadingMore} className="rounded-xl border border-blue-200 bg-white px-6 py-3 text-sm font-bold text-blue-700 disabled:opacity-60">
+              {loadingMore ? "جارٍ تحميل المزيد…" : "عرض اشتراكات أقدم"}
+            </button>
+          </div>
         )}
       </main>
     </div>

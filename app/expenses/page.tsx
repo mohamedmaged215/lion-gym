@@ -2,19 +2,36 @@
 
 import { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
-import { addExpense, getExpenses, deleteExpense } from "../lib/firebaseUtils";
+import { addExpense, getExpensePage, getExpenseTotal, deleteExpense, type PageCursor } from "../lib/firebaseUtils";
 import { Expense } from "../lib/types";
+import { localDate } from "../lib/dates";
 
-function DeleteModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+function DeleteModal({ onConfirm, onCancel }: { onConfirm: () => Promise<void>; onCancel: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleConfirm() {
+    setSaving(true);
+    setError("");
+    try {
+      await onConfirm();
+    } catch {
+      setError("تعذر حذف المصروف. حاول مرة أخرى.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
       <div className="relative bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm border border-gray-100 transition-all">
         <h3 className="text-lg font-bold text-gray-900 mb-2">تأكيد الحذف</h3>
         <p className="text-sm text-gray-600 mb-6">هل أنت متأكد من حذف هذا المصروف؟</p>
+        {error && <p role="alert" className="mb-3 text-sm text-red-600">{error}</p>}
         <div className="flex gap-3">
-          <button onClick={onConfirm} className="flex-1 py-3 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 active:scale-95 transition">حذف</button>
-          <button onClick={onCancel} className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 active:scale-95 transition">إلغاء</button>
+          <button onClick={handleConfirm} disabled={saving} className="flex-1 py-3 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 active:scale-95 disabled:opacity-60 transition">{saving ? "جارٍ الحذف…" : "حذف"}</button>
+          <button onClick={onCancel} disabled={saving} className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-700 text-sm font-bold hover:bg-gray-200 active:scale-95 disabled:opacity-60 transition">إلغاء</button>
         </div>
       </div>
     </div>
@@ -23,40 +40,77 @@ function DeleteModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel:
 
 export default function ExpensesPage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [cursor, setCursor] = useState<PageCursor | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [form, setForm] = useState({ expenseName: "", price: "" });
 
-  async function load() {
-    setLoading(true);
-    const data = await getExpenses();
-    data.sort((a, b) => b.date.localeCompare(a.date));
-    setExpenses(data);
-    setLoading(false);
-  }
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getExpensePage(null), getExpenseTotal()])
+      .then(([page, amount]) => {
+        if (cancelled) return;
+        setExpenses(page.expenses);
+        setCursor(page.cursor);
+        setHasMore(page.hasMore);
+        setTotal(amount);
+      })
+      .catch(() => {
+        if (!cancelled) setError("تعذر تحميل المصاريف. حاول مرة أخرى.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  async function loadMore() {
+    if (!cursor || !hasMore || loadingMore) return;
+    setLoadingMore(true);
+    setError("");
+    try {
+      const page = await getExpensePage(cursor);
+      setExpenses((previous) => [...previous, ...page.expenses]);
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
+    } catch {
+      setError("تعذر تحميل المزيد. حاول مرة أخرى.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!form.expenseName.trim() || !form.price) return;
     setSaving(true);
-    const today = new Date().toISOString().split("T")[0];
-    await addExpense({ expenseName: form.expenseName.trim(), price: Number(form.price), date: today });
-    setForm({ expenseName: "", price: "" });
-    await load();
-    setSaving(false);
+    setError("");
+    const expense = { expenseName: form.expenseName.trim(), price: Number(form.price), date: localDate() };
+    try {
+      const id = await addExpense(expense);
+      setExpenses((previous) => [{ id, ...expense }, ...previous]);
+      setTotal((previous) => previous + expense.price);
+      setForm({ expenseName: "", price: "" });
+    } catch {
+      setError("تعذر إضافة المصروف. حاول مرة أخرى.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function confirmDelete() {
     if (!deleteTarget) return;
     await deleteExpense(deleteTarget);
+    const deleted = expenses.find((expense) => expense.id === deleteTarget);
     setExpenses((prev) => prev.filter((e) => e.id !== deleteTarget));
+    if (deleted) setTotal((previous) => previous - deleted.price);
     setDeleteTarget(null);
   }
-
-  const total = expenses.reduce((sum, e) => sum + e.price, 0);
 
   return (
     <div className="min-h-full bg-gray-50/50 pb-24 sm:pb-8">
@@ -68,6 +122,8 @@ export default function ExpensesPage() {
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         <h2 className="text-xl sm:text-2xl font-black text-gray-900 mb-6">المصاريف</h2>
+
+        {error && <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
         <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm mb-6">
           <form onSubmit={handleAdd} className="space-y-4">
@@ -116,7 +172,7 @@ export default function ExpensesPage() {
               <div key={i} className="h-20 bg-gray-100 rounded-2xl animate-pulse border border-gray-150" />
             ))}
           </div>
-        ) : expenses.length === 0 ? (
+        ) : error && expenses.length === 0 ? null : expenses.length === 0 ? (
           <p className="text-center text-gray-400 text-sm py-16 bg-white rounded-2xl border border-gray-200">لا توجد مصاريف.</p>
         ) : (
           <>
@@ -184,6 +240,14 @@ export default function ExpensesPage() {
               </div>
             </div>
           </>
+        )}
+
+        {!loading && hasMore && (
+          <div className="mt-5 text-center">
+            <button type="button" onClick={loadMore} disabled={loadingMore} className="rounded-xl border border-red-200 bg-white px-6 py-3 text-sm font-bold text-red-700 disabled:opacity-60">
+              {loadingMore ? "جارٍ تحميل المزيد…" : "عرض مصاريف أقدم"}
+            </button>
+          </div>
         )}
 
         {!loading && expenses.length > 0 && (

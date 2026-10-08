@@ -3,9 +3,8 @@
 import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "../../../components/Navbar";
-import { getCustomers, updateCustomer } from "../../../lib/firebaseUtils";
+import { getCustomer, updateCustomer } from "../../../lib/firebaseUtils";
 import { calculateEndDate, calculateStatus } from "../../../lib/customerUtils";
-import { Customer } from "../../../lib/types";
 
 export default function EditCustomerPage({
   params,
@@ -16,6 +15,7 @@ export default function EditCustomerPage({
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [form, setForm] = useState({
     name: "",
     phone: "",
@@ -26,8 +26,7 @@ export default function EditCustomerPage({
   });
 
   useEffect(() => {
-    getCustomers().then((customers) => {
-      const c = customers.find((x: Customer) => x.id === id);
+    getCustomer(id).then((c) => {
       if (c) {
         setForm({
           name: c.name,
@@ -37,9 +36,10 @@ export default function EditCustomerPage({
           durationDays: String(c.durationDays || 30),
           price: String(c.price),
         });
+      } else {
+        setError("الاشتراك غير موجود.");
       }
-      setLoading(false);
-    });
+    }).catch(() => setError("تعذر تحميل الاشتراك.")).finally(() => setLoading(false));
   }, [id]);
 
   function set(field: string, value: string) {
@@ -54,6 +54,7 @@ export default function EditCustomerPage({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setError("");
 
     const isSession = form.subscriptionType === "session";
     const durationVal = isSession ? 0 : Number(form.durationDays);
@@ -65,18 +66,23 @@ export default function EditCustomerPage({
     }
 
     const status = calculateStatus(endDateVal, form.subscriptionType as "monthly" | "session");
-    await updateCustomer(id, {
-      name: form.name.trim(),
-      phone: form.phone.trim(),
-      subscriptionType: form.subscriptionType as "monthly" | "session",
-      startDate: form.startDate,
-      endDate: endDateVal,
-      durationDays: durationVal,
-      price: Number(form.price),
-      status,
-    });
-
-    router.push("/customers");
+    try {
+      await updateCustomer(id, {
+        name: form.name.trim(),
+        phone: form.phone.trim(),
+        subscriptionType: form.subscriptionType as "monthly" | "session",
+        startDate: form.startDate,
+        endDate: endDateVal,
+        durationDays: durationVal,
+        price: Number(form.price),
+        status,
+      });
+      router.push("/customers");
+    } catch {
+      setError("تعذر حفظ التغييرات. حاول مرة أخرى.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (loading) {
@@ -89,6 +95,17 @@ export default function EditCustomerPage({
               <div key={i} className="h-16 bg-gray-100 rounded-xl animate-pulse border border-gray-150" />
             ))}
           </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (error && !form.startDate) {
+    return (
+      <div className="min-h-full bg-gray-50/50 pb-24 sm:pb-8">
+        <Navbar />
+        <main className="max-w-lg mx-auto px-4 sm:px-6 py-8">
+          <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</p>
         </main>
       </div>
     );
@@ -213,6 +230,8 @@ export default function EditCustomerPage({
                 className="w-full px-4 py-3 rounded-xl border border-gray-300 bg-white text-gray-900 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
               />
             </div>
+
+            {error && <p role="alert" className="text-sm font-semibold text-red-600">{error}</p>}
 
             <button
               type="submit"
