@@ -3,17 +3,19 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "../../components/Navbar";
-import { addCustomer, addPayment } from "../../lib/firebaseUtils";
+import { addCustomerWithPayment } from "../../lib/firebaseUtils";
 import { calculateEndDate, calculateStatus } from "../../lib/customerUtils";
+import { localDate } from "../../lib/dates";
 
 export default function NewCustomerPage() {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const [form, setForm] = useState({
     name: "",
     phone: "",
     subscriptionType: "monthly",
-    startDate: new Date().toISOString().split("T")[0],
+    startDate: localDate(),
     durationDays: "30",
     price: "",
   });
@@ -30,6 +32,7 @@ export default function NewCustomerPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setError("");
 
     const isSession = form.subscriptionType === "session";
     const durationVal = isSession ? 0 : Number(form.durationDays);
@@ -41,19 +44,23 @@ export default function NewCustomerPage() {
     }
 
     const status = calculateStatus(endDateVal, form.subscriptionType as "monthly" | "session");
-    const customerId = await addCustomer({
-      name: form.name.trim(),
-      phone: form.phone.trim(),
-      subscriptionType: form.subscriptionType as "monthly" | "session",
-      startDate: form.startDate,
-      endDate: endDateVal,
-      durationDays: durationVal,
-      price: Number(form.price),
-      status,
-    });
-    await addPayment({ customerId, amount: Number(form.price), date: form.startDate });
-
-    router.push("/customers");
+    try {
+      await addCustomerWithPayment({
+        name: form.name.trim(),
+        phone: form.phone.trim(),
+        subscriptionType: form.subscriptionType as "monthly" | "session",
+        startDate: form.startDate,
+        endDate: endDateVal,
+        durationDays: durationVal,
+        price: Number(form.price),
+        status,
+      }, { amount: Number(form.price), date: form.startDate });
+      router.push("/customers");
+    } catch {
+      setError("تعذر حفظ الاشتراك. حاول مرة أخرى.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -179,6 +186,8 @@ export default function NewCustomerPage() {
                 className="w-full px-4 py-3 rounded-xl border border-gray-300 bg-white text-gray-900 placeholder-gray-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
               />
             </div>
+
+            {error && <p role="alert" className="text-sm font-semibold text-red-600">{error}</p>}
 
             <button
               type="submit"

@@ -1,36 +1,21 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Lion Gym
 
-## Getting Started
+Gym subscriptions and expense tracking built with Next.js and Firebase Auth/Firestore.
 
-First, run the development server:
+## Run locally
 
 ```bash
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000` and sign in with an existing Firebase Auth account.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Data flow
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- The dashboard requests Firestore aggregates. The selected month applies to revenue and expenses; membership status cards always describe today.
+- Subscriptions initially load the 25 most recent start dates. The month input limits the list to a selected month, and **Show older subscriptions** loads the next page. Name/phone search loads the full matching month (or all customers if no month is selected) so search remains complete.
+- New subscriptions and renewals write customer and payment records in one Firestore batch. Existing payment amounts are never rewritten when a customer price changes.
+- The expenses list loads 25 records at a time. Its total comes from a Firestore sum aggregate.
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Firestore Security Rules and administrator access remain managed in the existing Firebase project.
