@@ -178,11 +178,22 @@ async function sumForMonth(collectionName: string, fieldName: string, month: str
     where("date", ">=", Timestamp.fromDate(new Date(`${start}T00:00:00Z`))),
     where("date", "<", Timestamp.fromDate(new Date(`${end}T00:00:00Z`)))
   );
-  const [strings, timestamps] = await Promise.all([
-    getAggregateFromServer(stringQuery, { total: sum(fieldName) }),
-    getAggregateFromServer(timestampQuery, { total: sum(fieldName) }),
-  ]);
-  return Number(strings.data().total ?? 0) + Number(timestamps.data().total ?? 0);
+  try {
+    const [strings, timestamps] = await Promise.all([
+      getAggregateFromServer(stringQuery, { total: sum(fieldName) }),
+      getAggregateFromServer(timestampQuery, { total: sum(fieldName) }),
+    ]);
+    return Number(strings.data().total ?? 0) + Number(timestamps.data().total ?? 0);
+  } catch (error) {
+    // A new Firestore aggregate index can take time to build. Keep the dashboard
+    // usable with single-field date queries until the index is ready.
+    if ((error as { code?: string }).code !== "failed-precondition") throw error;
+    const [strings, timestamps] = await Promise.all([getDocs(stringQuery), getDocs(timestampQuery)]);
+    return [...strings.docs, ...timestamps.docs].reduce((total, item) => {
+      const value: unknown = item.data()[fieldName];
+      return total + (typeof value === "number" && Number.isFinite(value) ? value : 0);
+    }, 0);
+  }
 }
 
 export async function getDashboardStats(month: string): Promise<{
